@@ -9,9 +9,6 @@ S_BOX = {
 }
 INV_S_BOX = {v: k for k, v in S_BOX.items()}
 
-# 線形マスク
-ALPHA = 0b1001  # (1,0,0,1)
-BETA  = 0b0010  # (0,0,1,0)
 
 def parity(mask: int, x: int) -> int:
     """
@@ -19,10 +16,15 @@ def parity(mask: int, x: int) -> int:
     """
     return bin(mask & x).count("1") % 2
 
-def encrypt_block(m: int, key: int) -> int:
+def encrypt_cipherA(m: int, key: int) -> int:
     """
-    4ビット平文 m と 8ビット鍵 key で 1ブロック暗号化を行う。
-    key の上位4ビットを k0、下位4ビットを k1 とする。
+     CipherA の暗号化関数
+      入力: 4ビット平文 m, 鍵タプル keys = (k0, k1) 各4ビット
+      処理:
+         u = m ⊕ k0
+         v = S(u)
+         c = v ⊕ k1
+      出力: 4ビット暗号文 c
     """
     k0 = (key >> 4) & 0xF
     k1 = key & 0xF
@@ -31,9 +33,9 @@ def encrypt_block(m: int, key: int) -> int:
     c = v ^ k1
     return c
 
-def decrypt_block(c: int, key: int) -> int:
+def decrypt_cipherA(c: int, key: int) -> int:
     """
-    4ビット暗号文 c と 8ビット鍵 key で 1ブロック復号を行う。
+    CipherAの復号関数（暗号化処理の逆順を実行）
     """
     k0 = (key >> 4) & 0xF
     k1 = key & 0xF
@@ -61,7 +63,7 @@ def linear_attack(pairs: list[tuple[int,int]]) -> tuple[int,list[int],list[int]]
 
     # s を満たす鍵を全探索で絞り込む
     candidates = []
-    for key in range(256):
+    for key in range(2**8-1):
         k0 = (key >> 4) & 0xF
         k1 = key & 0xF
         if (parity(ALPHA, k0) ^ parity(BETA, k1)) == s:
@@ -70,6 +72,10 @@ def linear_attack(pairs: list[tuple[int,int]]) -> tuple[int,list[int],list[int]]
     return s, T, candidates
 
 if __name__ == "__main__":
+
+    # 線形マスク
+    ALPHA = 0b1001  # (1,0,0,1)
+    BETA  = 0b0010  # (0,0,1,0)
     # ランダム鍵の生成
     true_key = random.randint(0, 255)
     #true_key = 0xF3
@@ -80,7 +86,7 @@ if __name__ == "__main__":
     # pairs = [(m, encrypt_block(m, true_key)) for m in plaintexts]
     # 0から15までの16通りの平文を生成し、暗号文とのペアを作成
     plaintexts = list(range(16))
-    pairs = [(m, encrypt_block(m, true_key)) for m in plaintexts]
+    pairs = [(m, encrypt_cipherA(m, true_key)) for m in plaintexts]
 
 
     # 線形攻撃を実行
@@ -94,7 +100,7 @@ if __name__ == "__main__":
     # 候補群からさらに検証して正鍵を復元
     recovered = None
     for key in candidates:
-        if all(encrypt_block(m, key) == c for m, c in pairs[:10]):
+        if all(encrypt_cipherA(m, key) == c for m, c in pairs[:10]):
             recovered = key
             break
 

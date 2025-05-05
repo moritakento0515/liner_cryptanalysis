@@ -1,8 +1,7 @@
 import random
-import math
 
 
-# --- S-box, parity 関数 (変更なし) ---
+# --- S-box, parity 関数　---
 SBOX = {
     0x0: 0xF, 0x1: 0xE, 0x2: 0xB, 0x3: 0xC, 0x4: 0x6, 0x5: 0xD, 0x6: 0x7, 0x7: 0x8,
     0x8: 0x0, 0x9: 0x3, 0xA: 0x9, 0xB: 0xA, 0xC: 0x4, 0xD: 0x2, 0xE: 0x1, 0xF: 0x5
@@ -41,13 +40,17 @@ def encrypt_cipherC(m, keys):
     y = x ^ k2
     z = S(y)
     c = z ^ k3
-    return c & 0xF
+    return c 
 
-def decrypt_cipherC(c, keys):
+# decrypt_cipherC は攻撃コードでは直接使用しませんが、参考のために残します
+def decrypt_cipherC(c, key):
     """
     CipherC の復号関数（暗号化処理の逆順を実行）
     """
-    k0, k1, k2, k3 = keys
+    k0 = (key >> 12) & 0xF
+    k1 = (key >> 8) & 0xF
+    k2 = (key >> 4) & 0xF
+    k3 = key & 0xF
     z = c ^ k3
     y = S_inv(z)
     x = y ^ k2
@@ -55,102 +58,84 @@ def decrypt_cipherC(c, keys):
     v = w ^ k1
     u = S_inv(v)
     m = u ^ k0
-    return m & 0xF
+    return m 
 
-target_epsilon = 9/32
+
 # --- 線形暗号解析の実装 ---
-# 今回は、文献で d = 0xd (1101₂) として選んでいるマスクを利用
-MASKD = 0xD
 
 def linear_attack(plaintexts, ciphertexts):
     """
-    CipherB に対する線形攻撃 (k2を推定)。
-    平文マスク a=0xD, w'マスク d=0xD を使用。
-    観測されたバイアス偏差が最大の k2 候補を選択する。
+    CipherC に対する線形攻撃 (k3を推定)。
+    平文マスク a=0xD, y'マスク d=0xD を使用。
+    全通りのk3からパリティ値のカウントを行う。
+    カウント値の偏り（ε）と目標バイアスとの差(diff)も計算する
     """
 
-    stats = {} # 各k2候補に対する統計 (count0, count1)
+    stats = {} # 各k3候補に対する統計 (count0, count1)
 
-    # k2 の全候補 (0x0 から 0xF) を試す
-    for candidate in range(16):
+    # k3 の全候補 (0x0 から 0xF) を試す
+    for key_candidate in range(16):
         count0 = 0
         count1 = 0
         # 各平文・暗号文ペアで近似式が成り立つかカウント
         for m, c in zip(plaintexts, ciphertexts):
-            # k2候補を使って、w' を計算
-            x_prime = c ^ candidate
-            w_prime = S_inv(x_prime)
+            # k3候補を使って、y' を計算
+            z_prime = c ^ key_candidate
+            y_prime = S_inv(z_prime)
             
-            # 線形近似式 parity(m, d) ^ parity(w', d)を計算
+            # 線形近似式 parity(m, d) ^ parity(w', d) ^ 1 を計算(εがーだから)
             # この値は、正しいk2の場合、ある未知の鍵ビットのパリティと高い確率で一致するはず
-            val = parity(m, MASKD) ^ parity(w_prime, MASKD)
+            val = parity(m, MASKD) ^ parity(y_prime, MASKD) ^ 1
             # val が 0 か 1 かをカウント
-        
             if val == 0:
                 count0 += 1
             else:
                 count1 += 1
-        stats[candidate] = (count0, count1)
-
-    # --- 観測されたバイアスが目標バイアスに最も近い k2 を選ぶ ---
-    best_candidate = None
-    best_epsilon   = None           # 実際に記録する ε
-    best_diff      = float("inf")   # |ε - ε_target| の最小値
-    
-    for candidate, (cnt0, cnt1) in stats.items():
-        total = cnt0 + cnt1
-        
-        major   = max(cnt0, cnt1)
+        total = count0 + count1
+        major   = max(count0, count1)
         epsilon = major / total - 0.5       # 観測バイアス
         diff    = abs(epsilon - target_epsilon)
 
-        print(f"{candidate=}, cnt0={cnt0}, cnt1={cnt1}, ε={epsilon:.5f}, diff={diff:.5f}")
+        stats[key_candidate] = (count0,count1,epsilon,diff)
 
-        # 過去の best_diff よりも小さければ更新
-        if diff < best_diff:
-            best_diff      = diff
-            best_epsilon   = epsilon
-            best_candidate = candidate
-            
-        # 最も偏りが大きかった候補 k2 に対する recovered_bit を計算
-        # この recovered_bit は、近似parity式の結果であり、
-        # 直接的な鍵ビットそのものではないことに注意
-        # 復号側で推定すべきビット
-        cnt0, cnt1      = stats[best_candidate]
-        recovered_bit   = 0 if cnt0 > cnt1 else 1
+    return stats
 
-    return best_candidate, recovered_bit, stats, best_epsilon
 
-# --- 動作確認用のサンプルコード ---
-if __name__ == "__main__":
-    # 乱数（または固定値）で秘密鍵を設定（各鍵は 4 ビット）
-    secret_keys = (
-        random.randint(0, 15),
-        random.randint(0, 15),
-        random.randint(0, 15),
-        random.randint(0, 15)
-    )
-    print("Secret keys (k0, k1, k2, k3):", secret_keys)
+# --- 実行コード ---
 
-    # N 個の既知平文・暗号文ペアを生成する
-    N = 2000  # 必要なペア数は偏りの大きさに依存
-    plaintexts = []
-    ciphertexts = []
-    for _ in range(N):
-        m = random.randint(0, 15)
-        c = encrypt_cipherC(m, secret_keys)
-        plaintexts.append(m)
-        ciphertexts.append(c)
+# d = 0xd (1101₂) を使用
+MASKD = 0xD
+#（MASKDを用いた場合のBの線形特性確率）-1/2　　　　　（目標バイアス）
+target_epsilon = (1/2+9/32) - (1/2)
 
-    # 線形攻撃の実行
-    guessed_k3, recovered_bit, stats, epsilon = linear_attack(plaintexts, ciphertexts)
-    print("Secret keys (k0, k1, k2, k3):", secret_keys)
-    print("Guessed k3:", hex(guessed_k3))
-    print("Recovered bit (k0 ⊕ k1 ⊕ k2) ⋅ d:", recovered_bit)
-    print("epsilon:", epsilon)
-    print(f"\nTarget epsilon: {target_epsilon:.5f}\n")
+# 乱数（または固定値）で秘密鍵を設定（各鍵は 4 ビット）
+secret_key = (random.randint(0,2**16-1))
+secret_key =(                   #秘密鍵を分割
+    (secret_key >> 12) & 0xF,   #k0
+    (secret_key >> 8) & 0xF,    #k1
+    (secret_key >> 4) & 0xF,    #k2
+    secret_key & 0xF            #k3
+)
 
-    # 正しい (k0 ⊕ k1 ⊕ k2) ⋅ d の値を計算して比較
-    true_key_xor = secret_keys[0] ^ secret_keys[1] ^ secret_keys[2]
-    true_bit     = parity(true_key_xor, MASKD)
-    print("\n正解 (k0 ⊕ k1 ⊕ k2) ⋅ d:", true_bit)
+# N 個の既知平文・暗号文ペアを生成する
+N = 2000  # 必要なペア数は偏りの大きさに依存
+plaintexts = []
+ciphertexts = []
+for _ in range(N):
+    m = random.randint(0, 15)
+    # m = _
+    c = encrypt_cipherC(m, secret_key)
+    plaintexts.append(m)
+    ciphertexts.append(c)
+
+# 線形攻撃の実行
+stats = linear_attack(plaintexts, ciphertexts)
+for key_candidate, (count0,count1,epsilon,diff) in stats.items():
+    print(f"{key_candidate=}, cnt0={count0}, cnt1={count1}, ε={epsilon:.5f}, diff={diff:.5f}")
+
+print("\nSecret keys (k0, k1, k2, k3):", secret_key)
+print(f"Target epsilon: {target_epsilon:.5f}")    
+# 正しい (k0 ⊕ k1 ⊕ k2) ⋅ d の値を計算して比較
+true_key_xor = secret_key[0] ^ secret_key[1] ^ secret_key[2]
+true_bit     = parity(true_key_xor, MASKD)
+print("Correct bit (k0 ⊕ k1 ⊕ k2) ⋅ d:", true_bit)
